@@ -1,0 +1,26 @@
+---
+description: Web UI structure rules (one component per file)
+globs: web/src/**/*.tsx
+alwaysApply: false
+---
+
+# Web UI structure rules
+
+## One component per file
+
+- **Rule**: A `.tsx` file should define **only one React component**.
+- Avoid additional helper components/functions that return JSX inside the same file.
+- If you need a sub-UI piece, extract it into its own file under `web/src/components/...`.
+
+## Pages should be composition only
+
+- `web/src/app/**/page.tsx` should generally be **composition-only**:
+  - import components
+  - render layout
+  - avoid defining extra JSX-returning functions inside the page file
+
+## Shared UI primitives
+
+- Use small primitives in `web/src/components/ui/*` (Button/Card/Container/etc.)
+- Keep styling consistent (neutral enterprise palette + `dark:` variants)
+
