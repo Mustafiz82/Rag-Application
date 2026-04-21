@@ -34,6 +34,7 @@ export function ChatScreen() {
   const [isStreaming, setIsStreaming] = useState(false); // NEW: Track AI status
   const [needsOutsideConsent, setNeedsOutsideConsent] = useState(false);
   const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
+  const [streamStatus, setStreamStatus] = useState<string | null>(null);
 
   useEffect(() => {
     ensureSessionId();
@@ -46,6 +47,7 @@ export function ChatScreen() {
       setUploadError(null);
       setNeedsOutsideConsent(false);
       setPendingQuestion(null);
+      setStreamStatus(null);
     };
     window.addEventListener("session:new", onNew as EventListener);
     return () => window.removeEventListener("session:new", onNew as EventListener);
@@ -60,7 +62,7 @@ export function ChatScreen() {
     formData.append("file", file);
 
     try {
-      const res = await fetch("http://localhost:5000/ingest", {
+      const res = await fetch("https://rag-application-3w9w.onrender.com/ingest", {
         method: "POST",
         headers: { "x-session-id": sessionId },
         body: formData,
@@ -76,6 +78,7 @@ export function ChatScreen() {
       setMode("chat");
       setNeedsOutsideConsent(false);
       setPendingQuestion(null);
+      setStreamStatus(null);
     } catch {
       setUploadError("Could not reach the server. Is the API running?");
       setMode("preUpload");
@@ -101,12 +104,13 @@ export function ChatScreen() {
     setIsStreaming(true);
     setNeedsOutsideConsent(false);
     setPendingQuestion(null);
+    setStreamStatus("Starting request...");
 
     try {
       // #region agent log
-      fetch('http://127.0.0.1:7852/ingest/6088718b-12d7-4111-bc12-bee6f4d74c4c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'51b965'},body:JSON.stringify({sessionId:'51b965',runId:'pre-fix',hypothesisId:'H2',location:'web/ChatScreen.tsx:before_fetch',message:'Starting /ask fetch (SSE)',data:{url:'http://localhost:5000/ask?stream=1',sessionIdPresent:!!sessionId,allowOutsideKnowledge},timestamp:Date.now()})}).catch(()=>{});
+      fetch('http://127.0.0.1:7852/ingest/6088718b-12d7-4111-bc12-bee6f4d74c4c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'51b965'},body:JSON.stringify({sessionId:'51b965',runId:'pre-fix',hypothesisId:'H2',location:'web/ChatScreen.tsx:before_fetch',message:'Starting /ask fetch (SSE)',data:{url:'https://rag-application-3w9w.onrender.com/ask?stream=1',sessionIdPresent:!!sessionId,allowOutsideKnowledge},timestamp:Date.now()})}).catch(()=>{});
       // #endregion agent log
-      const res = await fetch(`http://localhost:5000/ask?p=${encodeURIComponent(text)}&stream=1`, {
+      const res = await fetch(`https://rag-application-3w9w.onrender.com/ask?p=${encodeURIComponent(text)}&stream=1`, {
         headers: {
           "x-session-id": sessionId,
           "x-allow-outside-knowledge": allowOutsideKnowledge ? "1" : "0",
@@ -137,13 +141,17 @@ export function ChatScreen() {
         } catch {
           data = { raw: dataRaw };
         }
+        const previewToken = data["token"];
+        const previewStep = data["step"];
+        const previewMessage = data["message"];
         // #region agent log
-        fetch('http://127.0.0.1:7852/ingest/6088718b-12d7-4111-bc12-bee6f4d74c4c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'51b965'},body:JSON.stringify({sessionId:'51b965',runId:'pre-fix',hypothesisId:'H3',location:'web/ChatScreen.tsx:handleEventBlock',message:'Parsed SSE block',data:{event,dataKeys:Object.keys(data).slice(0,8),dataPreview:String((data as any)?.token ?? (data as any)?.step ?? (data as any)?.message ?? '').slice(0,80)},timestamp:Date.now()})}).catch(()=>{});
+        fetch('http://127.0.0.1:7852/ingest/6088718b-12d7-4111-bc12-bee6f4d74c4c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'51b965'},body:JSON.stringify({sessionId:'51b965',runId:'pre-fix',hypothesisId:'H3',location:'web/ChatScreen.tsx:handleEventBlock',message:'Parsed SSE block',data:{event,dataKeys:Object.keys(data).slice(0,8),dataPreview:String(previewToken ?? previewStep ?? previewMessage ?? '').slice(0,80)},timestamp:Date.now()})}).catch(()=>{});
         // #endregion agent log
 
         if (event === "token") {
           const token = String((data as { token?: unknown }).token ?? "");
           accumulated += token;
+          setStreamStatus("Streaming answer...");
           setMessages((prev) =>
             prev.map((msg) => (msg.id === assistantId ? { ...msg, content: accumulated } : msg))
           );
@@ -153,6 +161,21 @@ export function ChatScreen() {
         if (event === "status") {
           // helpful console trace for debugging performance
           console.log("[ask:status]", data?.step ?? data?.message ?? data);
+          const step = String((data as { step?: unknown }).step ?? "");
+          const details = (data as { data?: { model?: string; attempt?: number; retryable?: boolean } }).data;
+          if (step === "start") setStreamStatus("Request started...");
+          else if (step === "retrieving") setStreamStatus("Retrieving relevant context...");
+          else if (step === "model_start") {
+            const model = details?.model ? ` ${details.model}` : "";
+            const attempt = details?.attempt ? ` (attempt ${details.attempt})` : "";
+            setStreamStatus(`Generating with${model}${attempt}...`);
+          } else if (step === "model_error") {
+            const model = details?.model ? ` ${details.model}` : "";
+            const retryable = details?.retryable ? " retryable failure." : " failure.";
+            setStreamStatus(`Model${model}${retryable} Switching...`);
+          } else if (step === "fallback_non_streaming") {
+            setStreamStatus("Fallback mode: generating final response...");
+          }
           return;
         }
 
@@ -160,6 +183,7 @@ export function ChatScreen() {
           if ((data as { needConsent?: unknown }).needConsent) {
             setNeedsOutsideConsent(true);
             setPendingQuestion(text);
+            setStreamStatus(null);
             setMessages((prev) =>
               prev.map((msg) =>
                 msg.id === assistantId
@@ -177,6 +201,7 @@ export function ChatScreen() {
 
           const answer = String((data as { answer?: unknown }).answer ?? accumulated);
           accumulated = answer;
+          setStreamStatus(null);
           setMessages((prev) =>
             prev.map((msg) => (msg.id === assistantId ? { ...msg, content: answer } : msg))
           );
@@ -190,6 +215,7 @@ export function ChatScreen() {
               msg.id === assistantId ? { ...msg, content: "Error: Could not get a response." } : msg
             )
           );
+          setStreamStatus("Error while generating response.");
         }
       };
 
@@ -213,14 +239,16 @@ export function ChatScreen() {
       // #endregion agent log
     } catch (err) {
       console.error("Chat error:", err);
+      const errMessage = err instanceof Error ? err.message : String(err ?? "");
       // #region agent log
-      fetch('http://127.0.0.1:7852/ingest/6088718b-12d7-4111-bc12-bee6f4d74c4c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'51b965'},body:JSON.stringify({sessionId:'51b965',runId:'pre-fix',hypothesisId:'H5',location:'web/ChatScreen.tsx:catch',message:'Chat error caught',data:{errMessage:String((err as any)?.message ?? err ?? '' ).slice(0,200)},timestamp:Date.now()})}).catch(()=>{});
+      fetch('http://127.0.0.1:7852/ingest/6088718b-12d7-4111-bc12-bee6f4d74c4c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'51b965'},body:JSON.stringify({sessionId:'51b965',runId:'pre-fix',hypothesisId:'H5',location:'web/ChatScreen.tsx:catch',message:'Chat error caught',data:{errMessage:errMessage.slice(0,200)},timestamp:Date.now()})}).catch(()=>{});
       // #endregion agent log
       setMessages((prev) => 
         prev.map((msg) => 
           msg.id === assistantId ? { ...msg, content: "Error: Could not get a response." } : msg
         )
       );
+      setStreamStatus("Error: could not connect to API.");
     } finally {
       setIsStreaming(false);
     }
@@ -251,7 +279,7 @@ export function ChatScreen() {
         />
         <div className="rounded-2xl border border-zinc-200 bg-white/60 p-4 dark:border-white/10 dark:bg-white/5">
           <div className="h-[52vh] overflow-y-auto pr-1">
-            <ChatMessageList messages={activeMessages} />
+            <ChatMessageList messages={activeMessages} streamStatus={streamStatus} />
           </div>
           {needsOutsideConsent && pendingQuestion && (
             <OutsideKnowledgeConsent

@@ -20,7 +20,7 @@ npm run dev
 ```
 
 This runs both workspaces concurrently:
-- API: `http://localhost:5000`
+- API: `https://rag-application-3w9w.onrender.com/`
 - Web: `http://localhost:3000`
 
 ## Run only the web app

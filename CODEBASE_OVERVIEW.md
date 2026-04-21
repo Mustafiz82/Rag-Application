@@ -28,7 +28,7 @@ Workspace scripts:
 ### Backend (API)
 
 - Entry: `api/index.ts`
-- Listens: `http://localhost:5000`
+- Public URL: `https://rag-application-3w9w.onrender.com/`
 
 Implemented routes today:
 
