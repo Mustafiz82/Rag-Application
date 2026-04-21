@@ -6,12 +6,14 @@ export function PdfDropzone({
   subtitle = "or click to browse files",
   hint = "PDF only • up to 25MB",
   right,
+  disabled, // 1. Destructure the prop
   onFileSelected,
 }: {
   title?: string;
   subtitle?: string;
   hint?: string;
   right?: ReactNode;
+  disabled?: boolean; // 2. Add it to the type definition
   onFileSelected?: (file: File) => void;
 }) {
   return (
