@@ -6,14 +6,14 @@ export function PdfDropzone({
   subtitle = "or click to browse files",
   hint = "PDF only • up to 25MB",
   right,
-  disabled, // 1. Destructure the prop
+  disabled,
   onFileSelected,
 }: {
   title?: string;
   subtitle?: string;
   hint?: string;
   right?: ReactNode;
-  disabled?: boolean; // 2. Add it to the type definition
+  disabled?: boolean;
   onFileSelected?: (file: File) => void;
 }) {
   return (
@@ -23,14 +23,18 @@ export function PdfDropzone({
         <div
           className={[
             "relative rounded-2xl border border-dashed border-zinc-300 bg-white/70 p-6",
-            "transition-colors group-hover:border-zinc-400",
+            disabled ? "opacity-60" : "transition-colors group-hover:border-zinc-400",
             "dark:border-white/15 dark:bg-white/5 dark:group-hover:border-white/25",
           ].join(" ")}
         >
           <input
             type="file"
             accept="application/pdf"
-            className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+            disabled={disabled}
+            className={[
+              "absolute inset-0 h-full w-full opacity-0",
+              disabled ? "cursor-not-allowed" : "cursor-pointer",
+            ].join(" ")}
             onChange={(e) => {
               const file = e.target.files?.[0];
               if (!file) return;

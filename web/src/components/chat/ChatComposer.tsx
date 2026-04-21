@@ -48,10 +48,10 @@ export function ChatComposer({
       </div>
 
       <Button
-        disabled={!canSend}
+        // disabled={!canSend}
         className="shrink-0"
         onClick={() => {
-          if (!canSend) return;
+          // if (!canSend) return;
           const next = text.trim();
           setText("");
           onSend(next);

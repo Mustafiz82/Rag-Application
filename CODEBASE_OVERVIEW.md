@@ -1,11 +1,11 @@
 # Codebase overview (read this first)
 
+Last updated: 2026-04-21
+
 This repo is a **Node.js monorepo** using **npm workspaces** with two packages:
 
 - `web/`: Next.js + React frontend (App Router)
-- `api/`: Express + TypeScript backend (intended RAG API)
-
-If you only read one file to get oriented, read this one.
+- `api/`: Express + TypeScript backend (RAG API)
 
 ---
 
@@ -23,107 +23,57 @@ Workspace scripts:
 
 ---
 
-## Repo-specific rule (important)
-
-Read `web/AGENTS.md` before changing the frontend. It states:
-
-- **This is NOT the Next.js you know** (breaking changes vs typical Next)
-- Use the repo’s local Next docs under `web/node_modules/next/dist/docs/` when in doubt
-
-`web/CLAUDE.md` currently just references `AGENTS.md`.
-
----
-
 ## Main entry points (actual runtime)
 
 ### Backend (API)
 
-- **Entry file**: `api/index.ts`
-- **Dev command**: `tsx watch index.ts`
-- **Current behavior**: Express server, CORS + JSON middleware, `GET /` health route, listens on `:5000`
+- Entry: `api/index.ts`
+- Listens: `http://localhost:5000`
 
-Notes:
+Implemented routes today:
 
-- Dependencies are already installed for typical RAG ingestion needs (`mongodb`, `multer`, `pdf-parse`, `dotenv`) but **they are not wired up yet** in code.
+- `GET /`: basic health response
+- `POST /ingest`: upload a PDF (`multipart/form-data` field name: `file`)
+  - requires header `x-session-id`
+  - parses PDF from memory buffer
+  - chunks + embeds + upserts vectors
+- `GET /ask?p=...`: query the RAG system
+  - requires header `x-session-id`
+  - supports JSON mode and SSE mode (`&stream=1` or `Accept: text/event-stream`)
+  - SSE emits `status`, `token`, `final`, `error`
+  - supports header `x-allow-outside-knowledge: 1|0`
+
+Vector store + models in code today:
+
+- **Vector DB**: Pinecone (namespace = `sessionId`)
+- **Embeddings**: Google embeddings (see `api/embed.ts` / `api/query.ts`)
+- **Chat model strategy**: Gemini fallback ladder + retry/timeout behavior (see `api/query.ts` and `api/llm.ts`)
+
+Current model ladder:
+
+- `gemini-2.0-flash`
+- `gemini-2.0-flash-lite`
+- `gemini-3-flash-preview`
+- `gemini-3.1-flash-lite-preview`
+
+Runtime reliability behaviors:
+
+- Per-model streaming attempts use timeout-based failover in `streamAnswerWithRagPolicy`
+- 429/rate-limit errors skip same-model retries and move to next model
+- Non-stream fallback exists as a last resort when stream path fails
 
 ### Frontend (Web)
 
-- **App Router root**: `web/src/app/`
-- **Root layout**: `web/src/app/layout.tsx` (metadata, fonts, global CSS)
-- **Home page**: `web/src/app/page.tsx` (still template content)
-- **Global CSS**: `web/src/app/globals.css` (Tailwind v4 import + CSS variables theme)
+- App Router root: `web/src/app/`
+- Home page: `web/src/app/page.tsx`
+- Chat page: `web/src/app/chat/page.tsx`
+- Chat client consumes SSE and renders partial tokens progressively
+- Session-scoped consent memory for outside-knowledge mode lives in localStorage keyed by session id
 
 ---
 
-## Key configuration files
+## Repo-specific rule (frontend)
 
-### Root
+Read `web/AGENTS.md` before changing the frontend. It notes that this project’s Next.js expectations may differ from defaults and recommends consulting local docs under `web/node_modules/next/dist/docs/` when needed.
 
-- `package.json`: workspaces + scripts that orchestrate both apps
-- `package-lock.json`: workspace lock
-
-### API
-
-- `api/package.json`: dev/build/start scripts
-- `api/tsconfig.json`: outputs compiled JS to `api/dist/` for `npm run start`
-
-### Web
-
-- `web/package.json`: Next scripts and deps
-- `web/tsconfig.json`:
-  - path alias: `@/*` → `web/src/*`
-  - uses `moduleResolution: "bundler"`
-- `web/next.config.ts`: Next config (currently empty)
-
----
-
-## What exists today vs what’s missing (RAG reality check)
-
-### Exists today
-
-- Web app shell (Next App Router) with basic Tailwind styling
-- API server shell (Express) with a single health route
-
-### Missing today (common “RAG app” pieces)
-
-- **Ingestion endpoints** (upload PDFs, parse, chunk)
-- **Embedding generation** (no embedding provider integrated)
-- **Vector storage/index** (MongoDB driver present, but no schema/collections/indexing code)
-- **Query/retrieval endpoint** (no “ask” route used by the web app)
-- **Web UI flow** for upload + chat/search + results
-
----
-
-## Recommended module structure (when you start building real RAG features)
-
-Right now everything is in `api/index.ts`. As soon as you add real functionality, it’s worth splitting into:
-
-### API (suggested)
-
-- `api/src/server.ts`: create app, middleware, listen
-- `api/src/routes/health.ts`: `GET /`
-- `api/src/routes/ingest.ts`: upload + parse + store
-- `api/src/routes/query.ts`: query + retrieve + respond
-- `api/src/services/pdf.ts`: PDF text extraction (`pdf-parse`)
-- `api/src/services/chunking.ts`: chunking logic
-- `api/src/services/mongo.ts`: Mongo connection + helpers
-- `api/src/repositories/*`: persistence (docs/chunks/embeddings)
-- `api/src/env.ts`: env validation (`dotenv` + schema)
-
-### Web (suggested)
-
-- `web/src/app/page.tsx`: “home” (chat/search)
-- `web/src/app/upload/page.tsx`: upload screen
-- `web/src/components/*`: UI components
-- `web/src/lib/api.ts`: typed calls to backend (`fetch`)
-
----
-
-## Where to start reading before making changes
-
-If you’re changing…
-
-- **Backend behavior**: `api/index.ts`, then `api/package.json`, then `api/tsconfig.json`
-- **Frontend UI**: `web/src/app/layout.tsx`, `web/src/app/page.tsx`, `web/src/app/globals.css`
-- **Build/dev behavior**: root `package.json`, then `web/package.json` / `api/package.json`
-
+`web/CLAUDE.md` currently just references `AGENTS.md`.

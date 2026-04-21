@@ -5,15 +5,25 @@ import { ChatComposer } from "@/components/chat/ChatComposer";
 import { ChatHeaderStrip } from "@/components/chat/ChatHeaderStrip";
 import { ChatMessageList, type ChatMessage } from "@/components/chat/ChatMessageList";
 import { ChatPreUpload } from "@/components/chat/ChatPreUpload";
+import { OutsideKnowledgeConsent } from "@/components/chat/OutsideKnowledgeConsent";
 
 type Mode = "preUpload" | "uploading" | "chat";
 
 function ensureSessionId() {
   const existing = window.localStorage.getItem("sessionId");
+  console.log("existing", existing)
   if (existing) return existing;
   const id = window.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
   window.localStorage.setItem("sessionId", id);
   return id;
+}
+
+function getOutsideKnowledgePref(sessionId: string) {
+  return window.localStorage.getItem(`outside:${sessionId}`) === "1";
+}
+
+function setOutsideKnowledgePref(sessionId: string, allowed: boolean) {
+  window.localStorage.setItem(`outside:${sessionId}`, allowed ? "1" : "0");
 }
 
 export function ChatScreen() {
@@ -22,14 +32,20 @@ export function ChatScreen() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isStreaming, setIsStreaming] = useState(false); // NEW: Track AI status
+  const [needsOutsideConsent, setNeedsOutsideConsent] = useState(false);
+  const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
 
   useEffect(() => {
     ensureSessionId();
     const onNew = () => {
+      const sessionId = ensureSessionId();
+      window.localStorage.removeItem(`outside:${sessionId}`);
       setMode("preUpload");
       setFileName(null);
       setMessages([]);
       setUploadError(null);
+      setNeedsOutsideConsent(false);
+      setPendingQuestion(null);
     };
     window.addEventListener("session:new", onNew as EventListener);
     return () => window.removeEventListener("session:new", onNew as EventListener);
@@ -39,6 +55,7 @@ export function ChatScreen() {
     setUploadError(null);
     setMode("uploading");
     const sessionId = ensureSessionId();
+    window.localStorage.removeItem(`outside:${sessionId}`);
     const formData = new FormData();
     formData.append("file", file);
 
@@ -57,6 +74,8 @@ export function ChatScreen() {
       setFileName(data.fileName);
       setMessages([]);
       setMode("chat");
+      setNeedsOutsideConsent(false);
+      setPendingQuestion(null);
     } catch {
       setUploadError("Could not reach the server. Is the API running?");
       setMode("preUpload");
@@ -64,45 +83,139 @@ export function ChatScreen() {
   }
 
   // NEW: Handle RAG Streaming
-  async function handleSendMessage(text: string) {
-    if (isStreaming) return;
+  async function handleSendMessage(text: string, forceAllowOutside?: boolean) {
+
+    // if (isStreaming) return;
     
     const sessionId = ensureSessionId();
+    console.log("handleSendMessage", text, forceAllowOutside)
+    const allowOutsideKnowledge = forceAllowOutside ?? getOutsideKnowledgePref(sessionId);
+    // #region agent log
+    fetch('http://127.0.0.1:7852/ingest/6088718b-12d7-4111-bc12-bee6f4d74c4c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'51b965'},body:JSON.stringify({sessionId:'51b965',runId:'pre-fix',hypothesisId:'H1',location:'web/ChatScreen.tsx:handleSendMessage_entry',message:'handleSendMessage called',data:{textPreview:text.slice(0,120),sessionIdPresent:!!sessionId,allowOutsideKnowledge,forceAllowOutside:typeof forceAllowOutside},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion agent log
     const userMsg: ChatMessage = { id: `u-${Date.now()}`, role: "user", content: text };
     const assistantId = `a-${Date.now()}`;
     const assistantMsg: ChatMessage = { id: assistantId, role: "assistant", content: "" };
 
     setMessages((prev) => [...prev, userMsg, assistantMsg]);
     setIsStreaming(true);
+    setNeedsOutsideConsent(false);
+    setPendingQuestion(null);
 
     try {
-      // Calling the streaming endpoint we built in the previous step
-      const res = await fetch(`http://localhost:5000/ask?p=${encodeURIComponent(text)}`, {
-        headers: { "x-session-id": sessionId },
+      // #region agent log
+      fetch('http://127.0.0.1:7852/ingest/6088718b-12d7-4111-bc12-bee6f4d74c4c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'51b965'},body:JSON.stringify({sessionId:'51b965',runId:'pre-fix',hypothesisId:'H2',location:'web/ChatScreen.tsx:before_fetch',message:'Starting /ask fetch (SSE)',data:{url:'http://localhost:5000/ask?stream=1',sessionIdPresent:!!sessionId,allowOutsideKnowledge},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion agent log
+      const res = await fetch(`http://localhost:5000/ask?p=${encodeURIComponent(text)}&stream=1`, {
+        headers: {
+          "x-session-id": sessionId,
+          "x-allow-outside-knowledge": allowOutsideKnowledge ? "1" : "0",
+          Accept: "text/event-stream",
+        },
       });
-
+      // #region agent log
+      fetch('http://127.0.0.1:7852/ingest/6088718b-12d7-4111-bc12-bee6f4d74c4c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'51b965'},body:JSON.stringify({sessionId:'51b965',runId:'pre-fix',hypothesisId:'H2',location:'web/ChatScreen.tsx:after_fetch',message:'Received /ask response headers',data:{ok:res.ok,status:res.status,contentType:res.headers.get('content-type'),hasBody:!!res.body},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion agent log
       if (!res.body) throw new Error("No response body");
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
-      let accumulatedResponse = "";
+      let buffer = "";
+      let accumulated = "";
+
+      type SsePayload = Record<string, unknown>;
+
+      const handleEventBlock = (block: string) => {
+        const lines = block.split("\n").filter(Boolean);
+        const eventLine = lines.find((l) => l.startsWith("event:"));
+        const dataLine = lines.find((l) => l.startsWith("data:"));
+        const event = eventLine?.slice("event:".length).trim() ?? "message";
+        const dataRaw = dataLine?.slice("data:".length).trim() ?? "{}";
+        let data: SsePayload = {};
+        try {
+          data = JSON.parse(dataRaw) as SsePayload;
+        } catch {
+          data = { raw: dataRaw };
+        }
+        // #region agent log
+        fetch('http://127.0.0.1:7852/ingest/6088718b-12d7-4111-bc12-bee6f4d74c4c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'51b965'},body:JSON.stringify({sessionId:'51b965',runId:'pre-fix',hypothesisId:'H3',location:'web/ChatScreen.tsx:handleEventBlock',message:'Parsed SSE block',data:{event,dataKeys:Object.keys(data).slice(0,8),dataPreview:String((data as any)?.token ?? (data as any)?.step ?? (data as any)?.message ?? '').slice(0,80)},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion agent log
+
+        if (event === "token") {
+          const token = String((data as { token?: unknown }).token ?? "");
+          accumulated += token;
+          setMessages((prev) =>
+            prev.map((msg) => (msg.id === assistantId ? { ...msg, content: accumulated } : msg))
+          );
+          return;
+        }
+
+        if (event === "status") {
+          // helpful console trace for debugging performance
+          console.log("[ask:status]", data?.step ?? data?.message ?? data);
+          return;
+        }
+
+        if (event === "final") {
+          if ((data as { needConsent?: unknown }).needConsent) {
+            setNeedsOutsideConsent(true);
+            setPendingQuestion(text);
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantId
+                  ? {
+                      ...msg,
+                      content:
+                        String((data as { answer?: unknown }).answer ?? "") ||
+                        "This isn’t in your PDF. Allow outside knowledge?",
+                    }
+                  : msg
+              )
+            );
+            return;
+          }
+
+          const answer = String((data as { answer?: unknown }).answer ?? accumulated);
+          accumulated = answer;
+          setMessages((prev) =>
+            prev.map((msg) => (msg.id === assistantId ? { ...msg, content: answer } : msg))
+          );
+          return;
+        }
+
+        if (event === "error") {
+          console.error("[ask:error]", data);
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === assistantId ? { ...msg, content: "Error: Could not get a response." } : msg
+            )
+          );
+        }
+      };
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // #region agent log
+        fetch('http://127.0.0.1:7852/ingest/6088718b-12d7-4111-bc12-bee6f4d74c4c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'51b965'},body:JSON.stringify({sessionId:'51b965',runId:'pre-fix',hypothesisId:'H3',location:'web/ChatScreen.tsx:reader_chunk',message:'Received SSE bytes',data:{bufferLen:buffer.length,accumulatedLen:accumulated.length},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion agent log
 
-        const chunk = decoder.decode(value, { stream: true });
-        accumulatedResponse += chunk;
-
-        // Update the last message (the assistant's message) with the new text
-        setMessages((prev) => 
-          prev.map((msg) => 
-            msg.id === assistantId ? { ...msg, content: accumulatedResponse } : msg
-          )
-        );
+        let idx: number;
+        while ((idx = buffer.indexOf("\n\n")) !== -1) {
+          const block = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 2);
+          if (block.trim()) handleEventBlock(block);
+        }
       }
+      // #region agent log
+      fetch('http://127.0.0.1:7852/ingest/6088718b-12d7-4111-bc12-bee6f4d74c4c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'51b965'},body:JSON.stringify({sessionId:'51b965',runId:'pre-fix',hypothesisId:'H4',location:'web/ChatScreen.tsx:stream_end',message:'SSE stream ended',data:{accumulatedLen:accumulated.length},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion agent log
     } catch (err) {
       console.error("Chat error:", err);
+      // #region agent log
+      fetch('http://127.0.0.1:7852/ingest/6088718b-12d7-4111-bc12-bee6f4d74c4c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'51b965'},body:JSON.stringify({sessionId:'51b965',runId:'pre-fix',hypothesisId:'H5',location:'web/ChatScreen.tsx:catch',message:'Chat error caught',data:{errMessage:String((err as any)?.message ?? err ?? '' ).slice(0,200)},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion agent log
       setMessages((prev) => 
         prev.map((msg) => 
           msg.id === assistantId ? { ...msg, content: "Error: Could not get a response." } : msg
@@ -140,6 +253,22 @@ export function ChatScreen() {
           <div className="h-[52vh] overflow-y-auto pr-1">
             <ChatMessageList messages={activeMessages} />
           </div>
+          {needsOutsideConsent && pendingQuestion && (
+            <OutsideKnowledgeConsent
+              isBusy={isStreaming}
+              onAllow={() => {
+                const sessionId = ensureSessionId();
+                setOutsideKnowledgePref(sessionId, true);
+                void handleSendMessage(pendingQuestion, true);
+              }}
+              onDecline={() => {
+                const sessionId = ensureSessionId();
+                setOutsideKnowledgePref(sessionId, false);
+                setNeedsOutsideConsent(false);
+                setPendingQuestion(null);
+              }}
+            />
+          )}
           <div className="mt-4 border-t border-zinc-200/70 pt-4 dark:border-white/10">
             <ChatComposer onSend={handleSendMessage} disabled={isStreaming} />
           </div>

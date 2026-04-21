@@ -17,7 +17,7 @@ export function ChatMessageList({ messages }: { messages: ChatMessage[] }) {
             if (parsed.answer) {
               displayContent = parsed.answer;
             }
-          } catch (e) {
+          } catch {
             // If it's not valid JSON, just show the raw string
             displayContent = m.content;
           }

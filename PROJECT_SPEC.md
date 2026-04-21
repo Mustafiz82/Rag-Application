@@ -1,99 +1,106 @@
 # Project spec (source of truth)
 
+Last updated: 2026-04-21
+
 This file is the **single reference** for what we’re building and how the repo is structured.
 
 ---
 
 ## What we’re building
 
-A **production-grade, session-based RAG (Retrieval-Augmented Generation) agent**:
+A **production-grade, session-based RAG (Retrieval-Augmented Generation) app**:
 
-- Users **upload a PDF** and then **chat with it**
-- **No authentication** required
-- **Privacy-first**: user data is **auto-purged** after inactivity
-- **Resilient**: retries/backoff + model fallback + streaming responses
-- **Stateless** API: session isolation via request header, not server memory
+- Users upload a PDF and chat with it
+- No authentication required
+- Session isolation via request header (`x-session-id`)
+- Privacy-first: data scoped per session (and should be purged / expired)
+- Streaming responses over SSE
+- Enterprise reliability (model fallback, retry strategy, consent-based outside knowledge)
 
 ---
 
 ## Current status (repo)
 
-- **Architecture**: monorepo via **NPM Workspaces**
-- **Packages**:
+- Monorepo via npm workspaces:
   - `api/`: Express + TypeScript (ES Modules)
   - `web/`: Next.js + Tailwind + TypeScript
-- **Deployment targets** (intended):
-  - Backend: Render
-  - Frontend: Vercel
-- **Database** (intended): MongoDB Atlas with **Vector Search** enabled
+- The API already implements a working baseline:
+  - `POST /ingest` (PDF → text → chunks → embeddings → vector upsert)
+  - `GET /ask?p=...` (question → embedding → vector search → Gemini answer)
+  - `GET /ask?p=...&stream=1` (SSE status/token/final events)
 
 ---
 
-## Technical stack (target)
+## Technical stack (current in code)
 
-- **Language**: TypeScript (ES Modules)
-- **LLM & Embeddings**:
-  - Generation: Google Gemini 1.5 Flash
-  - Embeddings: `text-embedding-004` (768 dimensions)
-- **PDF processing**: `pdf-parse`
-- **Orchestration**: LangChain.js (chunking + prompt management)
-- **Vector DB**: MongoDB Atlas Vector Search
-- **Observability**: LangSmith tracing
+### Web
+
+- Next.js `16.2.4`
+- React `19.2.4`
+- Tailwind v4
+
+### API
+
+- Express 5 + TypeScript
+- PDF parsing: `pdf-parse` (buffer-based parsing)
+- Chunking: `@langchain/textsplitters` (recursive character splitter)
+- Embeddings + LLM: `@langchain/google-genai`
+- Vector DB: **Pinecone** (`@pinecone-database/pinecone`)
+- Streaming transport: SSE from Express endpoint
 
 ---
 
-## Ingestion pipeline (“Vectorisation”)
+## Ingestion pipeline (implemented)
 
-Goal: upload a PDF, extract text, chunk it, embed it, store vectors, and ensure cleanup.
+Goal: upload a PDF, extract text, chunk it, embed it, store vectors.
 
-- **Upload**: `multer` handles `multipart/form-data` (PDF)
-- **Parsing**: `pdf-parse` extracts text from the in-memory buffer
-- **Chunking**: Recursive character splitter
+- Upload: `multer` (`multipart/form-data`, field name `file`)
+- Session header: `x-session-id` (required)
+- Parsing: `pdf-parse` from in-memory buffer
+- Chunking: recursive character splitter
   - chunk size: 1000 chars
   - overlap: 200 chars
-- **Embedding**: convert chunks → **768-dim** vectors using Google AI
-- **Storage schema** (MongoDB):
-  - `{ sessionId, text, embedding, createdAt }`
-- **Cleanup**:
-  - MongoDB **TTL index** on `createdAt`
-  - expiration: **1 hour**
-- **Data integrity requirement**:
-  - any PDF temp files must be deleted **immediately** after vectorization
+- Embedding: Google embeddings
+- Storage: Pinecone upsert into `namespace(sessionId)` with metadata `{ sessionId, text }`
+
+Important gaps to close (to reach “production-grade”):
+
+- Data lifecycle/cleanup policy (TTL / deletion) for vectors per session
+- Robust validation + structured error handling
+- Observability/tracing
+- Rate-limit handling + retries/backoff + model fallback
+- Security hardening (file size/type limits, CORS policy, etc.)
 
 ---
 
-## Retrieval pipeline (“RAG”)
+## Retrieval pipeline (implemented baseline)
 
-Goal: answer questions using session-isolated vector search + LLM generation + streaming.
+Goal: answer questions using session-isolated vector search + LLM generation.
 
-- **Session isolation**:
-  - each request includes `x-session-id` (UUID)
-  - all DB queries filter by `sessionId` to prevent cross-user data leakage
-- **Search**:
-  - MongoDB `$vectorSearch` for the user’s embedded question
-- **Resilience**:
-  - LLM call uses **exponential backoff** retries for 429/5XX
-  - **model fallback** strategy (e.g. Pro → Flash) when needed
-- **Streaming**:
-  - responses sent via **Readable Streams / SSE** to Next.js for real-time typing
-- **Scalability**:
-  - stateless API (no per-user in-memory storage)
+- Embed question
+- Query Pinecone `namespace(sessionId)` topK results
+- Build context from retrieved chunk texts
+- Route intent (`qa`, `explain_topic`, `mcq`, `question_patterns`)
+- Use grounded answering policy (context gate to reduce hallucination)
+- Stream answer tokens via SSE when requested
+- Apply model fallback ladder and retry strategy
 
----
+Current fallback ladder:
 
-## Frontend UI scope (current step)
+1. `gemini-2.0-flash`
+2. `gemini-2.0-flash-lite`
+3. `gemini-3-flash-preview`
+4. `gemini-3.1-flash-lite-preview`
 
-This repo currently contains **UI-only** work for the upload screen.
+Behavioral policy:
 
-- No backend integration yet
-- No real upload/vectorization logic yet
-- No API changes required for the UI-only step
+- If context is insufficient and outside knowledge is **not** allowed, API returns `needConsent: true`
+- If outside knowledge is allowed, answer can be generated from non-PDF knowledge
+- Frontend remembers this consent per session (Option B)
 
 ---
 
 ## Current file structure (important parts)
-
-### Monorepo layout
 
 ```text
 rag-application/
@@ -104,50 +111,12 @@ rag-application/
   package.json
 ```
 
-### Web UI (added for enterprise upload screen)
-
-```text
-web/src/
-  app/
-    page.tsx
-    chat/
-      page.tsx
-  components/
-    chat/
-      ChatComposer.tsx
-      ChatHeaderStrip.tsx
-      ChatMessageList.tsx
-      ChatPreUpload.tsx
-      ChatScreen.tsx
-    navigation/
-      AppTopBar.tsx
-    session/
-      NewSessionButton.tsx
-    theme/
-      ThemeInitScript.tsx
-      ThemeToggle.tsx
-    ui/
-      Button.tsx
-      Card.tsx
-      CardBody.tsx
-      CardHeader.tsx
-      Container.tsx
-    upload/
-      PdfDropzone.tsx
-```
-
 ---
 
-## UI conventions chosen (so it stays consistent)
+## UI conventions (frontend)
 
-- **Theme**: neutral “enterprise” zinc palette + light/dark (`dark:`) support
-- **Theme toggle**: class-based (`html.dark` / `html.light`) with localStorage persistence
-- **Icons**: Ionicons via `react-icons/io5` (no inline SVGs)
-- **Components**: small primitives under `web/src/components/ui/*`
-
----
-
-## Cursor rules (web UI)
-
-- `.cursor/rules/web-ui-structure.mdc`: enforce “one component per file” for `web/src/**/*.tsx`
+- Neutral “enterprise” zinc palette + light/dark support
+- Theme toggle uses class-based `html.dark` / `html.light` with persistence
+- UI primitives in `web/src/components/ui/*`
+- Chat UI includes outside-knowledge consent prompt with session memory
 

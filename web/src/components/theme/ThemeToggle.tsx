@@ -18,13 +18,12 @@ function applyTheme(theme: Theme) {
 }
 
 export function ThemeToggle() {
-  const [theme, setTheme] = useState<Theme>("light");
+  const [theme, setTheme] = useState<Theme>(() => getInitialTheme());
 
   useEffect(() => {
-    const t = getInitialTheme();
-    setTheme(t);
-    applyTheme(t);
-  }, []);
+    applyTheme(theme);
+    window.localStorage.setItem("theme", theme);
+  }, [theme]);
 
   return (
     <button
@@ -32,8 +31,6 @@ export function ThemeToggle() {
       onClick={() => {
         const next = theme === "dark" ? "light" : "dark";
         setTheme(next);
-        window.localStorage.setItem("theme", next);
-        applyTheme(next);
       }}
       className={[
         "inline-flex h-9 items-center gap-2 rounded-lg px-3 text-sm font-medium",

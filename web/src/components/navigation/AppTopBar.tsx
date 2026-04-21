@@ -1,8 +1,15 @@
+"use client";
+
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { Container } from "@/components/ui/Container";
-import { ThemeToggle } from "@/components/theme/ThemeToggle";
 import { NewSessionButton } from "@/components/session/NewSessionButton";
 import { IoDocumentTextOutline } from "react-icons/io5";
+
+const ThemeToggle = dynamic(
+  () => import("@/components/theme/ThemeToggle").then((m) => m.ThemeToggle),
+  { ssr: false }
+);
 
 export function AppTopBar({
   active,
