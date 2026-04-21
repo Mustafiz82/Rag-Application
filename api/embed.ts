@@ -8,10 +8,12 @@ const splitter = new RecursiveCharacterTextSplitter({ chunkSize: 1000, chunkOver
 export async function embedAndStore(sessionId: string, text: string) {
 
 
+
   // Initialized here so dotenv has already run
   const embeddings = new GoogleGenerativeAIEmbeddings({
     modelName: "gemini-embedding-001",
     taskType: TaskType.RETRIEVAL_DOCUMENT,
+    apiKey: process.env.GOOGLE_API_KEY,
   });
 
   const index = new Pinecone({ apiKey: process.env.PINECONE_API_KEY! })
