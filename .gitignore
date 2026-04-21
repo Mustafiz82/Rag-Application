@@ -1,0 +1,25 @@
+# Dependencies
+**/node_modules/
+**/dist/
+**/build/
+**/.next/
+
+# Environment Variables & Secrets
+.env
+.env.local
+.env.*.local
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# OS & IDE Files
+.DS_Store
+.vscode/
+.idea/
+
+# RAG specific (If you store vector data or docs locally)
+**/uploads/
+**/data/vector_db/
